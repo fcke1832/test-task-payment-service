@@ -31,5 +31,14 @@ services:
       timeout: 10s
       retries: 5
 
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: payment_dozzle
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
 volumes:
   postgres_data:
