@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # API Key для аутентификации
     API_KEY: str = "test-api-key-123"
 
+    # Outbox relay
+    OUTBOX_POLL_INTERVAL: float = 1.0
+    OUTBOX_BATCH_SIZE: int = 100
+
     @property
     def database_url(self) -> str:
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"

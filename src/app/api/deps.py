@@ -1,3 +1,4 @@
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
@@ -8,7 +9,7 @@ from app.db.session import async_session
 
 
 # Зависимость для получения сессии БД
-async def get_db() -> AsyncSession:
+async def get_db() -> AsyncGenerator[AsyncSession]:
     async with async_session() as session:
         try:
             yield session
