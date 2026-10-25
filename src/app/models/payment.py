@@ -31,8 +31,6 @@ class Payment(Base):
     description: Mapped[str] = mapped_column(String(255))
 
     # Метаданные (JSONB).
-    # В Python называем metadata_, чтобы не конфликтовать с Base.metadata,
-    # но в БД колонка будет называться "metadata"
     metadata_: Mapped[dict | None] = mapped_column(
         "metadata", JSONB, default=dict, server_default="{}"
     )
