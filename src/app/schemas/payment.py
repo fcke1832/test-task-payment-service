@@ -36,7 +36,10 @@ class PaymentDetailResponse(BaseModel):
     amount: Decimal
     currency: CurrencyEnum
     description: str
-    metadata_: dict[str, Any] | None = Field(alias="metadata")
+    # Читаем из атрибута ORM 'metadata_', а в JSON отдаем как 'metadata'
+    metadata: dict[str, Any] | None = Field(
+        alias="metadata_", serialization_alias="metadata"
+    )
     status: PaymentStatusEnum
     idempotency_key: str
     webhook_url: str
