@@ -29,3 +29,6 @@ htmlcov/
 
 # Alembic
 migrations/__pycache__/
+
+# uv local cache
+.uv-cache/

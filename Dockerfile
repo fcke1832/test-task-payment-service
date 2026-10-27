@@ -1,38 +1,22 @@
-# ==========================================
-# Этап 1: Сборка зависимостей с помощью uv (Python 3.14)
-# ==========================================
-FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim
 
 WORKDIR /app
 
-# 1. Копируем файлы управления зависимостями
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/src \
+    PATH="/app/.venv/bin:$PATH"
+
+# Сначала только зависимости: слой кешируется между сборками.
 COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
-# 2. Создаем venv и ставим зависимости
-RUN uv sync --frozen --no-install-project
+COPY src ./src
+COPY migrations ./migrations
+COPY alembic.ini README.md ./
 
-# 3. Копируем весь исходный код
-COPY . .
+EXPOSE 8000
 
-# 4. Устанавливаем сам проект
-RUN uv sync --frozen
-
-# ==========================================
-# Этап 2: Минимальный runtime-образ (Python 3.14)
-# ==========================================
-FROM python:3.14-slim
-
-WORKDIR /app
-
-# Копируем готовое виртуальное окружение из билдера
-COPY --from=builder /app/.venv /app/.venv
-
-# Копируем содержимое src/app напрямую в /app/app
-# Это решает проблему с src layout - Python будет находить модуль app
-COPY --from=builder /app/src/app /app/app
-
-# Отключаем буферизацию вывода для мгновенных логов
-ENV PYTHONUNBUFFERED=1
-
-# Запускаем через абсолютный путь к python из venv
-CMD ["/app/.venv/bin/python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
