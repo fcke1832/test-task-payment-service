@@ -1,3 +1,4 @@
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from app.models.payment import Payment
 from app.schemas.payment import PaymentCreate, PaymentDetailResponse, PaymentResponse
 
 router = APIRouter(prefix="/payments", tags=["payments"])
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 @router.post(
@@ -50,6 +52,9 @@ async def create_payment(
     )
     db.add(new_payment)
 
+    await db.flush()  # Получаем ID платежа до коммита
+    logger.info(f"Created new payment: {new_payment.id}")
+
     # Создаем запись в Outbox для публикации события
     outbox_event: Outbox = Outbox(
         event_type="payment.created",
@@ -61,9 +66,6 @@ async def create_payment(
         status=OutboxStatusEnum.PENDING,
     )
     db.add(outbox_event)
-
-    # Коммитим обе записи в одной транзакции (Transactional Outbox pattern)
-    await db.flush()  # Получаем ID платежа до коммита
 
     return new_payment
 

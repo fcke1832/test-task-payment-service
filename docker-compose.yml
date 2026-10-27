@@ -1,96 +1,141 @@
+x-db-env: &db-env
+  POSTGRES_USER: ${POSTGRES_USER:-app_user}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_password}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_DB: ${POSTGRES_DB:-payment_db}
+  POSTGRES_ECHO: ${POSTGRES_ECHO:-false}
+
+x-rabbit-env: &rabbit-env
+  RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-payments}:${RABBITMQ_DEFAULT_PASS:-payments_password}@rabbitmq:5672/
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: payment-service:local
+  restart: unless-stopped
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: payment_db
     environment:
-      POSTGRES_USER: app_user
-      POSTGRES_PASSWORD: app_password
-      POSTGRES_DB: payment_db
+      POSTGRES_USER: ${POSTGRES_USER:-app_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_password}
+      POSTGRES_DB: ${POSTGRES_DB:-payment_db}
     ports:
-      - "5433:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app_user -d payment_db"]
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
     container_name: payment_rabbit
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-payments}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-payments_password}
     ports:
-      - "5672:5672"   # Порт для приложений (AMQP)
-      - "15672:15672" # Порт для UI (Management Plugin)
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
-      test: rabbitmq-diagnostics -q ping
+      test:
+        - CMD-SHELL
+        - rabbitmq-diagnostics -q ping && rabbitmq-diagnostics -q check_port_connectivity
       interval: 10s
       timeout: 10s
-      retries: 5
+      retries: 10
+      start_period: 10s
 
   dozzle:
-    image: amir20/dozzle:latest
+    image: amir20/dozzle:v11.3.5
     container_name: payment_dozzle
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "8080:8080"
-    depends_on:
-      - postgres
-      - rabbitmq
+      - "${DOZZLE_PORT:-8080}:8080"
+    volumes:
+      # Только чтение: Dozzle нужен доступ к Docker API для чтения логов,
+      # запись в сокет контейнерам не требуется.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
 
+  migrate:
+    <<: *app
+    container_name: payment_migrate
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      <<: *db-env
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *app
     container_name: payment_api
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    environment:
+      <<: *db-env
+      API_KEY: ${API_KEY:-test-api-key-123}
+      APP_ENV: production
     ports:
       - "8000:8000"
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432      # внутренний порт контейнера
-      - POSTGRES_DB=${POSTGRES_DB}
-      - RABBITMQ_URL=${RABBITMQ_URL}
-      - API_KEY=${API_KEY}
-      - APP_ENV=production
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8000/health', headers={'X-API-Key': os.environ['API_KEY']}), timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
-  # Воркер для обработки платежей
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: payment_worker
-    command: [ "/app/.venv/bin/python", "-m", "app.messaging.worker" ]
+  consumer:
+    <<: *app
+    container_name: payment_consumer
+    command: ["python", "-m", "app.messaging.worker"]
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=${POSTGRES_DB}
-      - RABBITMQ_URL=${RABBITMQ_URL}
-      - API_KEY=${API_KEY}
-      - APP_ENV=production
-      - OUTBOX_POLL_INTERVAL=${OUTBOX_POLL_INTERVAL}
-      - OUTBOX_BATCH_SIZE=${OUTBOX_BATCH_SIZE}
+      <<: [*db-env, *rabbit-env]
+      APP_ENV: production
+      OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1.0}
+      OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-100}
+      OUTBOX_MAX_BACKOFF_SECONDS: ${OUTBOX_MAX_BACKOFF_SECONDS:-60}
+      MAX_PROCESSING_ATTEMPTS: ${MAX_PROCESSING_ATTEMPTS:-3}
+      RETRY_BASE_DELAY_SECONDS: ${RETRY_BASE_DELAY_SECONDS:-1.0}
+      PAYMENT_SUCCESS_RATE: ${PAYMENT_SUCCESS_RATE:-0.9}
+      PROCESSING_MIN_SECONDS: ${PROCESSING_MIN_SECONDS:-2.0}
+      PROCESSING_MAX_SECONDS: ${PROCESSING_MAX_SECONDS:-5.0}
+      WEBHOOK_TIMEOUT_SECONDS: ${WEBHOOK_TIMEOUT_SECONDS:-10.0}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       rabbitmq:
         condition: service_healthy
-    restart: unless-stopped
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  rabbitmq_data:
